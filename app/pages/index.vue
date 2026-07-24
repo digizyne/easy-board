@@ -1,19 +1,16 @@
 <template>
   <div>
     <UPageHero
-      title="Nuxt Starter Template"
-      description="A production-ready starter template powered by Nuxt UI. Build beautiful, accessible, and performant applications in minutes, not hours."
+      title="Agile, minus everything that slows you down."
+      description="EASY is Agile stripped to the one thing that still matters in an AI-accelerated world: is the work done, or not? A card describes the work. Two columns — Not Done and Done. No assignees, no due dates, no story points, no standups. Just work that ships."
       :links="[{
-        label: 'Get started',
-        to: 'https://ui.nuxt.com/docs/getting-started/installation/nuxt',
-        target: '_blank',
+        label: 'Start free',
+        to: '/signup',
         trailingIcon: 'i-lucide-arrow-right',
         size: 'xl'
       }, {
-        label: 'Use this template',
-        to: 'https://github.com/nuxt-ui-templates/starter',
-        target: '_blank',
-        icon: 'i-simple-icons-github',
+        label: 'Read the book',
+        to: '/book',
         size: 'xl',
         color: 'neutral',
         variant: 'subtle'
@@ -21,52 +18,47 @@
     />
 
     <UPageSection
-      id="features"
-      title="Everything you need to build modern Nuxt apps"
-      description="Start with a solid foundation. This template includes all the essentials for building production-ready applications with Nuxt UI's powerful component system."
+      title="Everything most tools track, EASY deletes."
+      description="Every ceremony and field in traditional Agile was built to coordinate humans working at human speed. When AI writes the code, most of it answers questions no one needs to ask anymore."
       :features="[{
-        icon: 'i-lucide-rocket',
-        title: 'Production-ready from day one',
-        description: 'Pre-configured with TypeScript, ESLint, Tailwind CSS, and all the best practices. Focus on building features, not setting up tooling.'
+        icon: 'i-lucide-square-check-big',
+        title: 'One card, one question',
+        description: 'A card is a gap between what exists and what should. It is either done or it is not. That binary is the whole methodology.'
       }, {
-        icon: 'i-lucide-palette',
-        title: 'Beautiful by default',
-        description: 'Leveraging Nuxt UI\'s design system with automatic dark mode, consistent spacing, and polished components that look great out of the box.'
+        icon: 'i-lucide-columns-2',
+        title: 'Two columns',
+        description: 'Not Done and Done. No In Progress to park work in, no Blocked state to hide behind. Work moves left to right exactly once.'
       }, {
-        icon: 'i-lucide-zap',
-        title: 'Lightning fast',
-        description: 'Optimized for performance with SSR/SSG support, automatic code splitting, and edge-ready deployment. Your users will love the speed.'
+        icon: 'i-lucide-users',
+        title: 'No assignees',
+        description: 'Work lives in a shared pool. Anyone — or any AI — can pick up the next card. Ownership of a unit of work is no longer the point.'
       }, {
-        icon: 'i-lucide-blocks',
-        title: '100+ components included',
-        description: 'Access Nuxt UI\'s comprehensive component library. From forms to navigation, everything is accessible, responsive, and customizable.'
+        icon: 'i-lucide-calendar-x',
+        title: 'No due dates or points',
+        description: 'Estimates calibrated to human effort break the moment AI enters the loop. So we do not pretend to make them.'
       }, {
-        icon: 'i-lucide-code-2',
-        title: 'Developer experience first',
-        description: 'Auto-imports, hot module replacement, and TypeScript support. Write less boilerplate and ship more features.'
+        icon: 'i-lucide-bot',
+        title: 'Built for AI teammates',
+        description: 'Outcome-phrased cards give AI tools the goal, not the steps. The human judgment that says “this is done” is what EASY tracks.'
       }, {
-        icon: 'i-lucide-shield-check',
-        title: 'Built for scale',
-        description: 'Enterprise-ready architecture with proper error handling, SEO optimization, and security best practices built-in.'
+        icon: 'i-lucide-eye',
+        title: 'The board is the report',
+        description: 'A full Done column is more honest than any burndown chart. Count the cards. Look at what they represent. That is the status update.'
       }]"
     />
 
     <UPageSection>
       <UPageCTA
-        title="Ready to build your next Nuxt app?"
-        description="Join thousands of developers building with Nuxt and Nuxt UI. Get this template and start shipping today."
+        title="Stop managing the process. Start shipping the work."
+        description="Create a board in thirty seconds. Free for small teams, forever."
         variant="subtle"
         :links="[{
-          label: 'Start building',
-          to: 'https://ui.nuxt.com/docs/getting-started/installation/nuxt',
-          target: '_blank',
-          trailingIcon: 'i-lucide-arrow-right',
-          color: 'neutral'
+          label: 'Start free',
+          to: '/signup',
+          trailingIcon: 'i-lucide-arrow-right'
         }, {
-          label: 'View on GitHub',
-          to: 'https://github.com/nuxt-ui-templates/starter',
-          target: '_blank',
-          icon: 'i-simple-icons-github',
+          label: 'See pricing',
+          to: '/pricing',
           color: 'neutral',
           variant: 'outline'
         }]"
