@@ -34,6 +34,8 @@ export default defineNuxtConfig({
     stripeWebhookSecret: '',
     anthropicApiKey: '',
     resendApiKey: '',
+    leadEmail: '',
+    leadFrom: '',
     public: {
       siteUrl: 'http://localhost:3000',
       stripePublishableKey: ''

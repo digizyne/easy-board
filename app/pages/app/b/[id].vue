@@ -3,12 +3,14 @@ import type { RealtimeChannel } from '@supabase/supabase-js'
 import draggable from 'vuedraggable'
 import type { Database } from '~/types/database.types'
 import type { Board, Card } from '~/types/db'
+import type { CardAssistResult } from '~/composables/useCardAssist'
 
 definePageMeta({ layout: 'app' })
 
 const route = useRoute()
 const supabase = useSupabaseClient<Database>()
 const toast = useToast()
+const { completionBurst, allClearBurst } = useCelebrate()
 const boardId = route.params.id as string
 
 // --- Board (lazy: don't block navigation; show a skeleton instead) ---
@@ -100,26 +102,61 @@ function endPosition(isDone: boolean) {
   return list.length ? Math.max(...list.map(c => c.position)) + 1 : 0
 }
 
-async function addCard() {
-  const desc = newDesc.value.trim()
+async function addCard(descArg?: string) {
+  const fromInput = descArg === undefined
+  const desc = (descArg ?? newDesc.value).trim()
   if (!desc) return
-  adding.value = true
+  if (fromInput) adding.value = true
   const { data, error } = await supabase
     .from('cards')
     .insert({ board_id: boardId, description: desc, position: endPosition(false) })
     .select()
     .single()
-  adding.value = false
+  if (fromInput) adding.value = false
   if (error) {
     toast.add({ title: 'Could not add card', description: error.message, color: 'error' })
     return
   }
-  newDesc.value = ''
+  if (fromInput) newDesc.value = ''
   if (data) upsertLocal(data)
 }
 
+// --- AI card assist ---
+const { assist, loading: aiLoading } = useCardAssist()
+const aiResult = ref<CardAssistResult | null>(null)
+
+async function runAssist() {
+  aiResult.value = null
+  const result = await assist(newDesc.value)
+  if (result) aiResult.value = result
+}
+function useOutcome() {
+  if (aiResult.value) newDesc.value = aiResult.value.outcome
+  aiResult.value = null
+}
+async function addSplitCard(desc: string) {
+  await addCard(desc)
+  if (aiResult.value) {
+    aiResult.value.split = aiResult.value.split.filter(s => s !== desc)
+    if (!aiResult.value.split.length) aiResult.value = null
+  }
+}
+async function addAllSplit() {
+  if (!aiResult.value) return
+  for (const s of aiResult.value.split) await addCard(s)
+  newDesc.value = ''
+  aiResult.value = null
+}
+
 async function moveCard(card: Card, isDone: boolean, position: number) {
+  const becameDone = isDone && !card.done
   upsertLocal({ ...card, done: isDone, position }) // optimistic
+  if (becameDone) {
+    // Defer so vuedraggable finishes its DOM moves before we toggle the
+    // card-pop class (otherwise Vue patches a node SortableJS is still moving).
+    const id = card.id
+    setTimeout(() => celebrateCompletion(id), 0)
+  }
   const { data, error } = await supabase
     .from('cards')
     .update({ done: isDone, position })
@@ -152,6 +189,56 @@ async function removeCard(card: Card) {
   }
 }
 
+// --- Celebration (ephemeral positive reinforcement) ---
+const lastPointer = ref({ x: 0.5, y: 0.5 }) // normalized screen coords
+function onPointerUp(e: PointerEvent) {
+  if (e.clientX || e.clientY) {
+    lastPointer.value = { x: e.clientX / window.innerWidth, y: e.clientY / window.innerHeight }
+  }
+}
+
+const justCompletedId = ref<string | null>(null)
+const showAllClear = ref(false)
+const affirmation = ref<{ text: string, left: number, top: number, key: number } | null>(null)
+let affirmKey = 0
+const AFFIRMATIONS = ['Shipped.', 'Done.', 'Nice.', 'Clean.', 'Gone.', 'Complete.', 'Finished.', '✅', '🎉', '💯', '👏', '👍', '✨', '🏁', '🚀']
+
+function celebrateCompletion(cardId: string) {
+  // Card "pop" on the newly-completed card.
+  justCompletedId.value = cardId
+  setTimeout(() => {
+    if (justCompletedId.value === cardId) justCompletedId.value = null
+  }, 650)
+
+  const { x, y } = lastPointer.value
+  const remaining = cards.value.filter(c => !c.done).length
+
+  // Everything's done → the bigger, on-brand milestone.
+  if (remaining === 0) {
+    allClearBurst()
+    showAllClear.value = true
+    setTimeout(() => (showAllClear.value = false), 2200)
+    return
+  }
+
+  completionBurst(x, y)
+
+  // Variable reward: an affirmation only some of the time.
+  if (import.meta.client && Math.random() < 0.45) {
+    affirmKey += 1
+    const myKey = affirmKey
+    affirmation.value = {
+      text: AFFIRMATIONS[Math.floor(Math.random() * AFFIRMATIONS.length)]!,
+      left: x * window.innerWidth,
+      top: y * window.innerHeight,
+      key: myKey
+    }
+    setTimeout(() => {
+      if (affirmation.value?.key === myKey) affirmation.value = null
+    }, 1100)
+  }
+}
+
 // --- Drag handling ---
 function onChange(evt: any, targetDone: boolean) {
   const info = evt.added ?? evt.moved
@@ -177,10 +264,17 @@ function onEnd() {
 // --- Edit card ---
 const editing = ref<Card | null>(null)
 const editText = ref('')
+const { assist: assistEdit, loading: editAiLoading } = useCardAssist()
+const editAiResult = ref<CardAssistResult | null>(null)
 
 function openEdit(card: Card) {
   editing.value = card
   editText.value = card.description
+  editAiResult.value = null
+}
+function closeEdit() {
+  editing.value = null
+  editAiResult.value = null
 }
 async function saveEdit() {
   if (!editing.value) return
@@ -193,7 +287,23 @@ async function saveEdit() {
     return
   }
   upsertLocal({ ...target, description: desc })
-  editing.value = null
+  closeEdit()
+}
+
+async function runEditAssist() {
+  editAiResult.value = null
+  const result = await assistEdit(editText.value)
+  if (result) editAiResult.value = result
+}
+function useEditOutcome() {
+  if (editAiResult.value) editText.value = editAiResult.value.outcome
+  editAiResult.value = null
+}
+async function addEditSplitCard(desc: string) {
+  await addCard(desc)
+  if (editAiResult.value) {
+    editAiResult.value.split = editAiResult.value.split.filter(s => s !== desc)
+  }
 }
 
 const cardActions = (card: Card, canEdit: boolean) => [[
@@ -248,7 +358,7 @@ async function deleteBoard() {
 </script>
 
 <template>
-  <div>
+  <div @pointerup="onPointerUp">
     <!-- Header -->
     <div class="flex items-center gap-3 mb-6">
       <UButton
@@ -318,17 +428,27 @@ async function deleteBoard() {
           <UBadge :label="String(notDoneList.length)" color="neutral" variant="subtle" />
         </div>
 
-        <form class="mb-4 space-y-2" @submit.prevent="addCard">
+        <form class="mb-4 space-y-2" @submit.prevent="addCard()">
           <UTextarea
             v-model="newDesc"
             :rows="2"
             autoresize
             placeholder="Describe the outcome — what should exist when this is done?"
             class="w-full"
-            @keydown.meta.enter="addCard"
-            @keydown.ctrl.enter="addCard"
+            @keydown.meta.enter="addCard()"
+            @keydown.ctrl.enter="addCard()"
           />
-          <div class="flex justify-end">
+          <div class="flex justify-between gap-2">
+            <UButton
+              icon="i-lucide-sparkles"
+              label="AI assist"
+              size="sm"
+              color="neutral"
+              variant="ghost"
+              :loading="aiLoading"
+              :disabled="!newDesc.trim()"
+              @click="runAssist"
+            />
             <UButton
               type="submit"
               icon="i-lucide-plus"
@@ -338,6 +458,67 @@ async function deleteBoard() {
               :disabled="!newDesc.trim()"
             />
           </div>
+
+          <!-- AI suggestion panel -->
+          <UCard
+            v-if="aiResult"
+            :ui="{ body: 'p-3 sm:p-3' }"
+            class="bg-primary/5 ring-primary/30"
+          >
+            <div class="flex items-start justify-between gap-2 mb-2">
+              <div class="flex items-center gap-1.5 text-primary text-xs font-semibold uppercase tracking-wide">
+                <UIcon name="i-lucide-sparkles" class="size-3.5" />
+                Suggestion
+              </div>
+              <UButton
+                icon="i-lucide-x"
+                size="xs"
+                color="neutral"
+                variant="ghost"
+                aria-label="Dismiss"
+                @click="aiResult = null"
+              />
+            </div>
+
+            <p class="text-xs text-muted mb-1">Outcome</p>
+            <p class="text-sm mb-2 whitespace-pre-wrap">{{ aiResult.outcome }}</p>
+            <div class="flex justify-end mb-2">
+              <UButton label="Use this" size="xs" icon="i-lucide-check" @click="useOutcome" />
+            </div>
+
+            <template v-if="aiResult.tooBig && aiResult.split.length">
+              <USeparator class="my-2" />
+              <p class="text-xs text-muted mb-2">
+                {{ aiResult.reason || 'This looks like more than one session of work.' }}
+                Split into:
+              </p>
+              <ul class="space-y-2">
+                <li
+                  v-for="(s, i) in aiResult.split"
+                  :key="i"
+                  class="flex items-start gap-2"
+                >
+                  <p class="flex-1 text-sm whitespace-pre-wrap">{{ s }}</p>
+                  <UButton
+                    icon="i-lucide-plus"
+                    size="xs"
+                    color="neutral"
+                    variant="soft"
+                    aria-label="Add this card"
+                    @click="addSplitCard(s)"
+                  />
+                </li>
+              </ul>
+              <div class="flex justify-end mt-2">
+                <UButton
+                  :label="`Add all ${aiResult.split.length} cards`"
+                  size="xs"
+                  icon="i-lucide-list-plus"
+                  @click="addAllSplit"
+                />
+              </div>
+            </template>
+          </UCard>
         </form>
 
         <ClientOnly>
@@ -410,7 +591,10 @@ async function deleteBoard() {
             @change="(e: any) => onChange(e, true)"
           >
             <template #item="{ element: card }">
-              <div class="cursor-grab active:cursor-grabbing">
+              <div
+                class="cursor-grab active:cursor-grabbing"
+                :class="justCompletedId === card.id ? 'card-pop' : ''"
+              >
                 <UCard :ui="{ body: 'p-3 sm:p-3' }" class="bg-elevated/50">
                   <div class="flex items-start gap-3">
                     <UCheckbox
@@ -486,17 +670,162 @@ async function deleteBoard() {
     <UModal
       :open="!!editing"
       title="Edit card"
-      @update:open="(v: boolean) => { if (!v) editing = null }"
+      @update:open="(v: boolean) => { if (!v) closeEdit() }"
     >
       <template #body>
         <form class="space-y-4" @submit.prevent="saveEdit">
           <UTextarea v-model="editText" :rows="3" autoresize class="w-full" />
-          <div class="flex justify-end gap-2">
-            <UButton label="Cancel" color="neutral" variant="ghost" @click="editing = null" />
-            <UButton type="submit" label="Save" :disabled="!editText.trim()" />
+
+          <!-- AI suggestion panel -->
+          <UCard
+            v-if="editAiResult"
+            :ui="{ body: 'p-3 sm:p-3' }"
+            class="bg-primary/5 ring-primary/30"
+          >
+            <div class="flex items-start justify-between gap-2 mb-2">
+              <div class="flex items-center gap-1.5 text-primary text-xs font-semibold uppercase tracking-wide">
+                <UIcon name="i-lucide-sparkles" class="size-3.5" />
+                Suggestion
+              </div>
+              <UButton
+                icon="i-lucide-x"
+                size="xs"
+                color="neutral"
+                variant="ghost"
+                aria-label="Dismiss"
+                @click="editAiResult = null"
+              />
+            </div>
+
+            <p class="text-xs text-muted mb-1">Outcome</p>
+            <p class="text-sm mb-2 whitespace-pre-wrap">{{ editAiResult.outcome }}</p>
+            <div class="flex justify-end mb-2">
+              <UButton label="Use this" size="xs" icon="i-lucide-check" @click="useEditOutcome" />
+            </div>
+
+            <template v-if="editAiResult.tooBig && editAiResult.split.length">
+              <USeparator class="my-2" />
+              <p class="text-xs text-muted mb-2">
+                {{ editAiResult.reason || 'This looks like more than one session of work.' }}
+                Add as separate cards:
+              </p>
+              <ul class="space-y-2">
+                <li
+                  v-for="(s, i) in editAiResult.split"
+                  :key="i"
+                  class="flex items-start gap-2"
+                >
+                  <p class="flex-1 text-sm whitespace-pre-wrap">{{ s }}</p>
+                  <UButton
+                    icon="i-lucide-plus"
+                    size="xs"
+                    color="neutral"
+                    variant="soft"
+                    aria-label="Add this card"
+                    @click="addEditSplitCard(s)"
+                  />
+                </li>
+              </ul>
+            </template>
+          </UCard>
+
+          <div class="flex justify-between gap-2">
+            <UButton
+              icon="i-lucide-sparkles"
+              label="AI assist"
+              color="neutral"
+              variant="ghost"
+              :loading="editAiLoading"
+              :disabled="!editText.trim()"
+              @click="runEditAssist"
+            />
+            <div class="flex gap-2">
+              <UButton label="Cancel" color="neutral" variant="ghost" @click="closeEdit" />
+              <UButton type="submit" label="Save" :disabled="!editText.trim()" />
+            </div>
           </div>
         </form>
       </template>
     </UModal>
+
+    <!-- Celebration overlays -->
+    <span
+      v-if="affirmation"
+      :key="affirmation.key"
+      class="affirm text-primary"
+      :style="{ left: `${affirmation.left}px`, top: `${affirmation.top}px` }"
+    >
+      {{ affirmation.text }}
+    </span>
+
+    <div v-if="showAllClear" class="allclear-wrap">
+      <div class="allclear-pill">
+        <UIcon name="i-lucide-party-popper" class="size-5" />
+        <span>Nothing left. Ship it.</span>
+      </div>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.card-pop {
+  animation: cardPop 600ms ease;
+  border-radius: 0.5rem;
+}
+@keyframes cardPop {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+  30% { transform: scale(1.035); box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.45); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+.affirm {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  font-weight: 700;
+  font-size: 1.125rem;
+  animation: affirmFloat 1100ms ease forwards;
+}
+@keyframes affirmFloat {
+  0% { opacity: 0; transform: translate(-50%, -40%) scale(0.9); }
+  20% { opacity: 1; transform: translate(-50%, -70%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -160%) scale(1); }
+}
+
+.allclear-wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 18vh;
+  pointer-events: none;
+}
+.allclear-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  border-radius: 9999px;
+  font-weight: 600;
+  color: var(--ui-bg, #fff);
+  background: var(--ui-primary, #10b981);
+  box-shadow: 0 10px 30px -8px rgba(16, 185, 129, 0.55);
+  animation: allClear 2200ms ease forwards;
+}
+@keyframes allClear {
+  0% { opacity: 0; transform: translateY(10px) scale(0.96); }
+  10% { opacity: 1; transform: translateY(0) scale(1); }
+  80% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-6px) scale(1); }
+}
+
+/* Respect reduced-motion: keep the feedback, drop the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .card-pop { animation: none; }
+  .affirm { animation: affirmFade 1100ms ease forwards; transform: translate(-50%, -50%); }
+  @keyframes affirmFade { 0% { opacity: 0; } 20% { opacity: 1; } 100% { opacity: 0; } }
+  .allclear-pill { animation: affirmFade 2200ms ease forwards; }
+}
+</style>

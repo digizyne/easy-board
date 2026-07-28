@@ -12,6 +12,24 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
+      ai_assist_usage: {
+        Row: {
+          count: number
+          day: string
+          user_id: string
+        }
+        Insert: {
+          count?: number
+          day?: string
+          user_id: string
+        }
+        Update: {
+          count?: number
+          day?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       boards: {
         Row: {
           archived_at: string | null
@@ -230,6 +248,7 @@ export type Database = {
     }
     Functions: {
       accept_invitation: { Args: { _token: string }; Returns: string }
+      bump_ai_usage: { Args: { _limit: number }; Returns: boolean }
       can_access_board: { Args: { _board: string }; Returns: boolean }
       create_organization: { Args: { _name: string }; Returns: string }
       is_org_admin: { Args: { _org: string }; Returns: boolean }
