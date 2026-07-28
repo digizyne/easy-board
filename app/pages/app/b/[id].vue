@@ -11,20 +11,17 @@ const supabase = useSupabaseClient<Database>()
 const toast = useToast()
 const boardId = route.params.id as string
 
-// --- Board ---
-const { data: board } = await useAsyncData<Board | null>(
+// --- Board (lazy: don't block navigation; show a skeleton instead) ---
+const { data: board, status: boardStatus } = useLazyAsyncData<Board | null>(
   `board-${boardId}`,
   async () => {
     const { data } = await supabase.from('boards').select('*').eq('id', boardId).single()
     return data
   }
 )
-if (!board.value) {
-  throw createError({ statusCode: 404, statusMessage: 'Board not found', fatal: true })
-}
 
-// --- Cards (source of truth) ---
-const { data: cards } = await useAsyncData<Card[]>(
+// --- Cards (lazy) ---
+const { data: cards, status: cardsStatus } = useLazyAsyncData<Card[]>(
   `cards-${boardId}`,
   async () => {
     const { data } = await supabase
@@ -38,6 +35,9 @@ const { data: cards } = await useAsyncData<Card[]>(
   { default: () => [] }
 )
 
+const loading = computed(() => boardStatus.value !== 'success' || cardsStatus.value !== 'success')
+const notFound = computed(() => boardStatus.value === 'success' && !board.value)
+
 // --- Column lists that vuedraggable mutates ---
 const notDoneList = ref<Card[]>([])
 const doneList = ref<Card[]>([])
@@ -49,8 +49,7 @@ function rebuildLists() {
 }
 rebuildLists()
 
-// Keep the lists in sync with the source, except while a drag is in flight
-// (vuedraggable owns the arrays during the drag).
+// Keep the lists in sync with the source, except while a drag is in flight.
 watch(cards, () => {
   if (!isDragging.value) rebuildLists()
 })
@@ -92,7 +91,7 @@ onUnmounted(() => {
   if (channel) supabase.removeChannel(channel)
 })
 
-// --- Mutations ---
+// --- Card mutations ---
 const newDesc = ref('')
 const adding = ref(false)
 
@@ -119,7 +118,6 @@ async function addCard() {
   if (data) upsertLocal(data)
 }
 
-// Single persist path for column/position changes.
 async function moveCard(card: Card, isDone: boolean, position: number) {
   upsertLocal({ ...card, done: isDone, position }) // optimistic
   const { data, error } = await supabase
@@ -133,7 +131,7 @@ async function moveCard(card: Card, isDone: boolean, position: number) {
     rebuildLists()
     toast.add({ title: 'Could not move card', description: error.message, color: 'error' })
   } else if (data) {
-    upsertLocal(data) // pick up done_at/done_by
+    upsertLocal(data)
   }
 }
 
@@ -155,11 +153,9 @@ async function removeCard(card: Card) {
 }
 
 // --- Drag handling ---
-// vuedraggable has already reordered the target list when @change fires.
-// We compute the dropped card's new position from its neighbors and persist.
 function onChange(evt: any, targetDone: boolean) {
   const info = evt.added ?? evt.moved
-  if (!info) return // 'removed' is handled by the destination list's 'added'
+  if (!info) return
   const list = targetDone ? doneList.value : notDoneList.value
   const idx = info.newIndex as number
   const card = info.element as Card
@@ -178,7 +174,7 @@ function onEnd() {
   rebuildLists()
 }
 
-// --- Edit ---
+// --- Edit card ---
 const editing = ref<Card | null>(null)
 const editText = ref('')
 
@@ -204,10 +200,56 @@ const cardActions = (card: Card, canEdit: boolean) => [[
   ...(canEdit ? [{ label: 'Edit', icon: 'i-lucide-pencil', onSelect: () => openEdit(card) }] : []),
   { label: 'Delete', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => removeCard(card) }
 ]]
+
+// --- Board rename / delete ---
+const boardActions = [[
+  { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => openRename() },
+  { label: 'Delete board', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => (showDelete.value = true) }
+]]
+
+const showRename = ref(false)
+const renameText = ref('')
+const renaming = ref(false)
+
+function openRename() {
+  renameText.value = board.value?.name ?? ''
+  showRename.value = true
+}
+async function saveRename() {
+  const name = renameText.value.trim()
+  if (!name || !board.value) return
+  renaming.value = true
+  const { error } = await supabase.from('boards').update({ name }).eq('id', boardId)
+  renaming.value = false
+  if (error) {
+    toast.add({ title: 'Could not rename board', description: error.message, color: 'error' })
+    return
+  }
+  board.value = { ...board.value, name }
+  showRename.value = false
+  refreshNuxtData('boards') // keep the dashboard list in sync
+}
+
+const showDelete = ref(false)
+const deleting = ref(false)
+
+async function deleteBoard() {
+  deleting.value = true
+  const { error } = await supabase.from('boards').delete().eq('id', boardId)
+  if (error) {
+    deleting.value = false
+    toast.add({ title: 'Could not delete board', description: error.message, color: 'error' })
+    return
+  }
+  toast.add({ title: 'Board deleted', color: 'success' })
+  await refreshNuxtData(['boards', 'board-counts']) // drop the deleted board from the dashboard
+  await navigateTo('/app')
+}
 </script>
 
 <template>
   <div>
+    <!-- Header -->
     <div class="flex items-center gap-3 mb-6">
       <UButton
         to="/app"
@@ -216,10 +258,59 @@ const cardActions = (card: Card, canEdit: boolean) => [[
         variant="ghost"
         aria-label="Back to boards"
       />
-      <h1 class="text-2xl font-bold">{{ board?.name }}</h1>
+      <USkeleton v-if="boardStatus !== 'success'" class="h-8 w-56" />
+      <template v-else-if="board">
+        <h1 class="text-2xl font-bold flex-1 truncate">{{ board.name }}</h1>
+        <UDropdownMenu :items="boardActions">
+          <UButton
+            icon="i-lucide-ellipsis"
+            color="neutral"
+            variant="ghost"
+            aria-label="Board actions"
+          />
+        </UDropdownMenu>
+      </template>
+      <h1 v-else class="text-2xl font-bold text-muted">Board not found</h1>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <!-- Not found -->
+    <div
+      v-if="notFound"
+      class="border border-dashed border-default rounded-lg p-12 text-center"
+    >
+      <UIcon name="i-lucide-search-x" class="size-8 text-muted mx-auto mb-3" />
+      <p class="font-medium">This board doesn’t exist</p>
+      <p class="text-sm text-muted mt-1 mb-4">It may have been deleted, or you don’t have access.</p>
+      <UButton to="/app" label="Back to boards" icon="i-lucide-arrow-left" />
+    </div>
+
+    <!-- Loading skeleton -->
+    <div v-else-if="loading" class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <section v-for="col in 2" :key="col">
+        <div class="flex items-center justify-between mb-3">
+          <USkeleton class="h-4 w-24" />
+          <USkeleton class="h-5 w-6 rounded-full" />
+        </div>
+        <div class="space-y-3">
+          <div
+            v-for="n in (col === 1 ? 4 : 2)"
+            :key="n"
+            class="rounded-lg border border-default p-3"
+          >
+            <div class="flex items-start gap-3">
+              <USkeleton class="size-4 rounded shrink-0 mt-0.5" />
+              <div class="flex-1 space-y-2">
+                <USkeleton class="h-3.5 w-full" />
+                <USkeleton class="h-3.5 w-2/3" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Board -->
+    <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-6">
       <!-- Not Done -->
       <section>
         <div class="flex items-center justify-between mb-3">
@@ -356,7 +447,42 @@ const cardActions = (card: Card, canEdit: boolean) => [[
       </section>
     </div>
 
-    <!-- Edit modal -->
+    <!-- Rename modal -->
+    <UModal v-model:open="showRename" title="Rename board">
+      <template #body>
+        <form class="space-y-4" @submit.prevent="saveRename">
+          <UFormField label="Board name" name="name">
+            <UInput v-model="renameText" autofocus required class="w-full" />
+          </UFormField>
+          <div class="flex justify-end gap-2">
+            <UButton label="Cancel" color="neutral" variant="ghost" @click="showRename = false" />
+            <UButton type="submit" label="Save" :loading="renaming" :disabled="!renameText.trim()" />
+          </div>
+        </form>
+      </template>
+    </UModal>
+
+    <!-- Delete confirm modal -->
+    <UModal v-model:open="showDelete" title="Delete board?">
+      <template #body>
+        <p class="text-sm text-muted">
+          This permanently deletes <span class="text-highlighted font-medium">{{ board?.name }}</span>
+          and all of its cards. This can’t be undone.
+        </p>
+        <div class="flex justify-end gap-2 mt-4">
+          <UButton label="Cancel" color="neutral" variant="ghost" @click="showDelete = false" />
+          <UButton
+            label="Delete board"
+            color="error"
+            icon="i-lucide-trash-2"
+            :loading="deleting"
+            @click="deleteBoard"
+          />
+        </div>
+      </template>
+    </UModal>
+
+    <!-- Edit card modal -->
     <UModal
       :open="!!editing"
       title="Edit card"
